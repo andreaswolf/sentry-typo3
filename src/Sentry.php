@@ -14,11 +14,16 @@ use TYPO3\CMS\Core\Utility\GeneralUtility;
 final class Sentry
 {
     private static bool $initialized = false;
+    private static bool $initializing = false;
     private static ?SentryMessageFactory $messageFactory = null;
     private static ?FallbackLogger $fallbackLogger = null;
 
     public static function captureEvent(LogRecord $record): ?EventId
     {
+        if (self::$initializing) {
+            // error during initialization, do not continue to prevent an endless loop
+            return false;
+        }
         $initialized = self::initialize();
         if (!$initialized) {
             return null;
@@ -63,18 +68,24 @@ final class Sentry
         if (self::$initialized) {
             return true;
         }
-        if (empty($GLOBALS['TYPO3_CONF_VARS']['EXTCONF']['sentry']['dsn'])) {
-            return false;
-        }
         try {
-            self::$messageFactory = GeneralUtility::makeInstance(SentryMessageFactory::class);
-            $client = GeneralUtility::makeInstance(SentryClientFactory::class)->createClient();
-        } catch (\Throwable $e) {
-            GeneralUtility::makeInstance(LogManager::class)->getLogger('Sentry.Logger')
-                ->error('Could not initialize Sentry, because an error occurred before DI was available', ['exception' => $e]);
-            return false;
+            self::$initializing = true;
+
+            if (empty($GLOBALS['TYPO3_CONF_VARS']['EXTCONF']['sentry']['dsn'])) {
+                return false;
+            }
+            try {
+                self::$messageFactory = GeneralUtility::makeInstance(SentryMessageFactory::class);
+                $client = GeneralUtility::makeInstance(SentryClientFactory::class)->createClient();
+            } catch (\Throwable $e) {
+                GeneralUtility::makeInstance(LogManager::class)->getLogger('Sentry.Logger')
+                    ->error('Could not initialize Sentry, because an error occurred before DI was available', ['exception' => $e]);
+                return false;
+            }
+            SentrySdk::init()->bindClient($client);
+            return self::$initialized = true;
+        } finally {
+            self::$initializing = false;
         }
-        SentrySdk::init()->bindClient($client);
-        return self::$initialized = true;
     }
 }
